@@ -1,0 +1,21 @@
+// import mongoose from "mongoose";
+const mongoose = require("mongoose")
+
+const chatSchema = new mongoose.Schema({
+  isGroup: { type: Boolean, default: false },     // 👈 groups
+  title: String,                                  // 👈 group name
+  description: String,                            // 👈 group description
+  participants: [{ type: mongoose.Schema.Types.ObjectId, ref: "User", index: true }],
+  admins: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }], // 👈 admin-only
+  lastMessage: String,
+  lastAt: Date,
+  pinnedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],        // 👈 pinned
+  unread: { type: Map, of: Number, default: {} },                             // 👈 unread per userId
+}, { timestamps: true });
+
+
+chatSchema.index({ participants: 1 }, { unique: false });
+
+// mongoose.model("Chat", chatSchema);
+
+module.exports = mongoose.model("Chat" , chatSchema)

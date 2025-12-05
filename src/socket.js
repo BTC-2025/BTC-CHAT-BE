@@ -1,0 +1,525 @@
+// const {Server} = require("socket.io")
+// const User = require("./models/User.js")
+// const Chat = require("./models/Chat.js")
+// const Message = require("./models/Message.js")
+// const PendingDelivery = require("./models/PendingDelivery.js")
+
+// // memory map socket->user
+// const onlineUsers = new Map(); // socketId -> { userId }
+// const userRooms = new Map();   // userId -> Set(chatIds)
+
+// const mountIO = (httpServer, corsOrigin) => {
+//   const io = new Server(httpServer, { cors: { origin: corsOrigin } });
+
+//   io.use(async (socket, next) => {
+//     const { userId } = socket.handshake.auth || {};
+//     if (!userId) return next(new Error("unauthorized"));
+//     socket.data.userId = userId;
+//     next();
+//   });
+
+//   io.on("connection", async (socket) => {
+//     const userId = socket.data.userId;
+//     onlineUsers.set(socket.id, { userId });
+
+//     await User.findByIdAndUpdate(userId, { isOnline: true, lastSeen: new Date() });
+//     io.emit("presence:update", { userId, isOnline: true });
+
+//     const chats = await Chat.find({ participants: userId }).select("_id").lean();
+//     const rooms = new Set(chats.map(c => String(c._id)));
+//     userRooms.set(userId, rooms);
+//     rooms.forEach(r => socket.join(r));
+
+//     socket.on("typing:start", ({ chatId }) =>
+//       socket.to(chatId).emit("typing:started", { chatId, userId })
+//     );
+
+//     socket.on("typing:stop", ({ chatId }) =>
+//       socket.to(chatId).emit("typing:stopped", { chatId, userId })
+//     );
+
+//     socket.on("message:send", async ({ chatId, body, attachments }) => {
+//       const msg = await Message.create({
+//         chat: chatId,
+//         sender: userId,
+//         body,
+//         attachments: attachments || [],
+//       });
+
+//       const chat = await Chat.findById(chatId);
+//       chat.lastMessage = body || (attachments?.length ? "[attachment]" : "");
+//       chat.lastAt = msg.createdAt;
+
+//       chat.participants.forEach((p) => {
+//         const pid = String(p);
+//         if (pid !== userId) {
+//           const current = Number(chat.unread.get(pid) || 0);
+//           chat.unread.set(pid, current + 1);
+//         }
+//       });
+//       await chat.save();
+
+//       const deliveredTo = [];
+//       const room = io.sockets.adapter.rooms.get(chatId);
+
+//       for (const p of chat.participants) {
+//         const pid = String(p);
+//         if (pid === userId) continue;
+
+//         const inRoom = room && room.size > 0;
+//         if (inRoom) deliveredTo.push(pid);
+//         else await PendingDelivery.create({ user: pid, message: msg._id });
+//       }
+
+//       if (deliveredTo.length) {
+//         msg.status = "delivered";
+//         msg.deliveredTo = deliveredTo;
+//         await msg.save();
+//       }
+
+//       io.to(chatId).emit("message:new", msg);
+//       io.to(chatId).emit("chats:update", {
+//         chatId,
+//         lastMessage: chat.lastMessage,
+//         lastAt: chat.lastAt,
+//       });
+//     });
+
+//     socket.on("message:readAll", async ({ chatId }) => {
+//       await Message.updateMany(
+//         { chat: chatId, readBy: { $ne: userId } },
+//         { $addToSet: { readBy: userId }, $set: { status: "seen" } }
+//       );
+
+//       const chat = await Chat.findById(chatId);
+//       chat.unread.set(userId, 0);
+//       await chat.save();
+
+//       io.to(chatId).emit("message:readReceipt", { chatId, reader: userId });
+//       io.to(chatId).emit("chats:update", { chatId, unreadResetFor: userId });
+//     });
+
+//     socket.on("message:delete", async ({ messageId, forEveryone }) => {
+//       const msg = await Message.findById(messageId);
+//       if (!msg) return;
+
+//       const chat = await Chat.findById(msg.chat);
+//       const isAdmin = chat.admins.map(String).includes(userId);
+
+//       if (forEveryone) {
+//         if (String(msg.sender) !== userId && !isAdmin) return;
+//         msg.deletedForEveryone = true;
+//       } else {
+//         msg.deletedFor.addToSet(userId);
+//       }
+//       await msg.save();
+
+//       io.to(String(msg.chat)).emit("message:deleted", { messageId, forEveryone });
+//     });
+
+//     socket.on("chat:pin", async ({ chatId, pin }) => {
+//       const chat = await Chat.findById(chatId);
+//       if (!chat) return;
+
+//       if (pin) chat.pinnedBy.addToSet(userId);
+//       else chat.pinnedBy.pull(userId);
+
+//       await chat.save();
+//       socket.emit("chat:pinned", { chatId, pin });
+//     });
+
+//     socket.on("group:create", async ({ title, description, participants }) => {
+//       const unique = Array.from(new Set([userId, ...participants]));
+
+//       const chat = await Chat.create({
+//         isGroup: true,
+//         title,
+//         description,
+//         participants: unique,
+//         admins: [userId],
+//         lastMessage: "Group created",
+//         lastAt: new Date(),
+//       });
+
+//       socket.emit("group:created", { chatId: chat._id });
+//     });
+
+//     socket.on("group:add", async ({ chatId, memberId }) => {
+//       const chat = await Chat.findById(chatId);
+//       if (!chat || !chat.admins.map(String).includes(userId)) return;
+
+//       chat.participants.addToSet(memberId);
+//       await chat.save();
+//       io.to(chatId).emit("group:updated");
+//     });
+
+//     socket.on("group:remove", async ({ chatId, memberId }) => {
+//       const chat = await Chat.findById(chatId);
+//       if (!chat || !chat.admins.map(String).includes(userId)) return;
+
+//       chat.participants.pull(memberId);
+//       chat.admins.pull(memberId);
+//       await chat.save();
+//       io.to(chatId).emit("group:updated");
+//     });
+
+//     socket.on("group:promote", async ({ chatId, memberId }) => {
+//       const chat = await Chat.findById(chatId);
+//       if (!chat || !chat.admins.map(String).includes(userId)) return;
+
+//       chat.admins.addToSet(memberId);
+//       await chat.save();
+//       io.to(chatId).emit("group:updated");
+//     });
+
+//     socket.on("group:broadcast", async ({ chatId, body }) => {
+//       socket.emit("message:send", { chatId, body });
+//     });
+
+//     socket.on("user:sync", async () => {
+//       const pending = await PendingDelivery.find({ user: userId })
+//         .populate("message")
+//         .lean();
+
+//       if (pending.length) {
+//         pending.forEach((p) => socket.emit("message:new", p.message));
+//         await PendingDelivery.deleteMany({ user: userId });
+//       }
+//     });
+
+//     socket.on("disconnect", async () => {
+//       onlineUsers.delete(socket.id);
+
+//       const stillOnline = Array.from(onlineUsers.values()).some(
+//         (u) => u.userId === userId
+//       );
+
+//       if (!stillOnline) {
+//         await User.findByIdAndUpdate(userId, {
+//           isOnline: false,
+//           lastSeen: new Date(),
+//         });
+
+//         io.emit("presence:update", { userId, isOnline: false });
+//       }
+//     });
+
+//     // when a user opens a chat, mark all as read for them
+//     socket.on("message:readAll", async ({ chatId }) => {
+//       const userId = socket.data.userId;
+
+//       // mark all messages in this chat as seen by this user
+//       await Message.updateMany(
+//         { chat: chatId, readBy: { $ne: userId } },
+//         { $addToSet: { readBy: userId }, $set: { status: "seen" } }
+//       );
+
+//       // reset unread counter for this user in the chat
+//       const chat = await Chat.findById(chatId);
+//       if (chat) {
+//         chat.unread.set(userId, 0);
+//         await chat.save();
+//       }
+
+//       // notify both panes: chat window (for ticks) and sidebar (for badge)
+//       io.to(chatId).emit("message:readReceipt", { chatId, reader: userId });
+//       io.emit("chats:update", { chatId, unreadResetFor: userId }); // sidebar listeners will set badge=0
+//     });
+
+//   });
+
+//   return io;
+// };
+
+// // ✅ ✅ ADD THIS LINE
+// module.exports = { mountIO };
+
+
+
+const { Server } = require("socket.io");
+const User = require("./models/User.js");
+const Chat = require("./models/Chat.js");
+const Message = require("./models/Message.js");
+const PendingDelivery = require("./models/PendingDelivery.js");
+
+// memory maps
+const onlineUsers = new Map(); // socketId -> { userId }
+const userRooms = new Map();   // userId -> Set(chatIds)
+
+const mountIO = (httpServer, corsOrigin) => {
+  const io = new Server(httpServer, { cors: { origin: corsOrigin } });
+
+  io.use(async (socket, next) => {
+    const { userId } = socket.handshake.auth || {};
+    if (!userId) return next(new Error("unauthorized"));
+    socket.data.userId = String(userId);
+    next();
+  });
+
+  io.on("connection", async (socket) => {
+    const userId = socket.data.userId;
+    onlineUsers.set(socket.id, { userId });
+
+    await User.findByIdAndUpdate(userId, { isOnline: true, lastSeen: new Date() });
+    io.emit("presence:update", { userId, isOnline: true });
+
+    const chats = await Chat.find({ participants: userId }).select("_id").lean();
+    const rooms = new Set(chats.map(c => String(c._id)));
+    userRooms.set(userId, rooms);
+    rooms.forEach(r => socket.join(r));
+
+    // Typing
+    socket.on("typing:start", ({ chatId }) =>
+      socket.to(chatId).emit("typing:started", { chatId, userId })
+    );
+    socket.on("typing:stop", ({ chatId }) =>
+      socket.to(chatId).emit("typing:stopped", { chatId, userId })
+    );
+
+    // Send message
+    socket.on("message:send", async ({ chatId, body, attachments }) => {
+      let msg = await Message.create({
+        chat: chatId,
+        sender: userId,
+        body,
+        attachments: attachments || [],
+      });
+
+      // ✅ Populate sender info for group chats
+      msg = await Message.findById(msg._id)
+        .populate("sender", "full_name phone")
+        .lean();
+
+      const chat = await Chat.findById(chatId);
+      chat.lastMessage = body || (attachments?.length ? "[attachment]" : "");
+      chat.lastAt = msg.createdAt;
+
+      // Build set of userIds currently in this chat room
+      const socketIdSet = io.sockets.adapter.rooms.get(String(chatId)) || new Set();
+      const userIdsInRoom = new Set();
+      for (const sid of socketIdSet) {
+        const s = io.sockets.sockets.get(sid);
+        if (s?.data?.userId) userIdsInRoom.add(String(s.data.userId));
+      }
+
+      // unread & delivered per recipient
+      const deliveredTo = [];
+      for (const p of chat.participants) {
+        const pid = String(p);
+        if (pid === userId) continue;
+
+        if (userIdsInRoom.has(pid)) {
+          // recipient is viewing this chat now => mark delivered, do NOT bump unread
+          deliveredTo.push(pid);
+        } else {
+          const current = Number(chat.unread.get(pid) || 0);
+          chat.unread.set(pid, current + 1);
+          await PendingDelivery.create({ user: pid, message: msg._id });
+        }
+      }
+      await chat.save();
+
+      if (deliveredTo.length) {
+        await Message.findByIdAndUpdate(msg._id, {
+          status: "delivered",
+          deliveredTo: deliveredTo,
+        });
+        msg.status = "delivered";
+        msg.deliveredTo = deliveredTo;
+      }
+
+      io.to(chatId).emit("message:new", msg);
+      io.to(chatId).emit("chats:update", {
+        chatId,
+        lastMessage: chat.lastMessage,
+        lastAt: chat.lastAt,
+      });
+    });
+
+    // Mark all messages read in a chat
+    socket.on("message:readAll", async ({ chatId }) => {
+      try {
+        await Message.updateMany(
+          { chat: chatId, readBy: { $ne: userId } },
+          { $addToSet: { readBy: userId }, $set: { status: "seen" } }
+        );
+
+        const chat = await Chat.findById(chatId);
+        if (chat) {
+          chat.unread.set(userId, 0);
+          await chat.save();
+        }
+
+        io.to(chatId).emit("message:readReceipt", { chatId, reader: userId });
+        io.emit("chats:update", { chatId, unreadResetFor: userId });
+      } catch (err) {
+        console.error("message:readAll error", err);
+      }
+    });
+
+    // Delete message (for me / for everyone)
+    socket.on("message:delete", async ({ messageId, forEveryone }) => {
+      try {
+        const msg = await Message.findById(messageId);
+        if (!msg) return;
+
+        const chat = await Chat.findById(msg.chat);
+        if (!chat) return;
+
+        const isAdmin = (chat.admins || []).map(String).includes(userId);
+        const isSender = String(msg.sender) === userId;
+
+        if (forEveryone) {
+          // Only sender or admin can delete for everyone
+          if (!isSender && !isAdmin) return;
+          msg.deletedForEveryone = true;
+          await msg.save();
+
+          // notify entire chat
+          io.to(String(msg.chat)).emit("message:deleted:everyone", { messageId });
+        } else {
+          // delete only for current user
+          msg.deletedFor.addToSet(userId);
+          await msg.save();
+
+          // notify ONLY this user's sockets
+          // (send to the connection that requested; if you support multi-device, you can track and emit to all user sockets)
+          socket.emit("message:deleted:me", { messageId });
+        }
+      } catch (err) {
+        console.error("message:delete error", err);
+      }
+    });
+
+    // Pin chat
+    socket.on("chat:pin", async ({ chatId, pin }) => {
+      const chat = await Chat.findById(chatId);
+      if (!chat) return;
+      if (pin) chat.pinnedBy.addToSet(userId);
+      else chat.pinnedBy.pull(userId);
+      await chat.save();
+      socket.emit("chat:pinned", { chatId, pin });
+    });
+
+    // Group management
+    socket.on("group:create", async ({ title, description, participants }, callback) => {
+      try {
+        // ✅ Convert phone numbers → user IDs
+        const users = await User.find({ phone: { $in: participants } }).select("_id");
+
+        const mappedIds = users.map((u) => String(u._id));
+
+        // ✅ Include creator
+        const unique = Array.from(new Set([userId, ...mappedIds]));
+
+        const chat = await Chat.create({
+          isGroup: true,
+          title,
+          description,
+          participants: unique,        // ✅ now ObjectId array
+          admins: [userId],
+          lastMessage: "Group created",
+          lastAt: new Date(),
+        });
+
+        // ✅ Notify creator
+        socket.emit("group:created", { chatId: chat._id });
+
+        if (callback) callback({ success: true });
+      } catch (err) {
+        console.error("Group create error:", err);
+        if (callback) callback({ success: false, error: err.message });
+      }
+    });
+
+
+    socket.on("group:add", async ({ chatId, memberId }) => {
+      const chat = await Chat.findById(chatId);
+      if (!chat || !chat.admins.map(String).includes(userId)) return;
+      chat.participants.addToSet(memberId);
+      await chat.save();
+      io.to(chatId).emit("group:updated");
+    });
+
+    socket.on("group:remove", async ({ chatId, memberId }) => {
+      const chat = await Chat.findById(chatId);
+      if (!chat || !chat.admins.map(String).includes(userId)) return;
+      chat.participants.pull(memberId);
+      chat.admins.pull(memberId);
+      await chat.save();
+      io.to(chatId).emit("group:updated");
+    });
+
+    socket.on("group:promote", async ({ chatId, memberId }) => {
+      const chat = await Chat.findById(chatId);
+      if (!chat || !chat.admins.map(String).includes(userId)) return;
+      chat.admins.addToSet(memberId);
+      await chat.save();
+      io.to(chatId).emit("group:updated");
+    });
+
+    // Broadcast via bot/shortcut
+    socket.on("group:broadcast", async ({ chatId, body }) => {
+      socket.emit("message:send", { chatId, body });
+    });
+
+    // Deliver pending
+    socket.on("user:sync", async () => {
+      const pending = await PendingDelivery.find({ user: userId })
+        .populate("message")
+        .lean();
+
+      if (pending.length) {
+        pending.forEach((p) => socket.emit("message:new", p.message));
+        await PendingDelivery.deleteMany({ user: userId });
+      }
+    });
+
+    // Disconnect
+    socket.on("disconnect", async () => {
+      onlineUsers.delete(socket.id);
+
+      const stillOnline = Array.from(onlineUsers.values()).some(
+        (u) => u.userId === userId
+      );
+
+      if (!stillOnline) {
+        await User.findByIdAndUpdate(userId, {
+          isOnline: false,
+          lastSeen: new Date(),
+        });
+        io.emit("presence:update", { userId, isOnline: false });
+      }
+    });
+
+    // in server/src/socket.js where you handle group:* events
+    socket.on("group:add", async ({ chatId, memberPhone }) => {
+      const chat = await Chat.findById(chatId);
+      if (!chat || !chat.admins.map(String).includes(userId)) return;
+      const user = await User.findOne({ phone: memberPhone });
+      if (!user) return;
+      chat.participants.addToSet(user._id);
+      await chat.save();
+      io.to(chatId).emit("group:updated", { chatId });
+    });
+
+    socket.on("group:remove", async ({ chatId, memberPhone }) => {
+      const chat = await Chat.findById(chatId);
+      if (!chat || !chat.admins.map(String).includes(userId)) return;
+      const user = await User.findOne({ phone: memberPhone });
+      if (!user) return;
+
+      if (chat.admins.length === 1 && String(chat.admins[0]) === String(user._id)) return; // enforce rule
+      chat.participants.pull(user._id);
+      chat.admins.pull(user._id);
+      await chat.save();
+      io.to(chatId).emit("group:updated", { chatId });
+    });
+
+
+  });
+
+  return io;
+};
+
+module.exports = { mountIO };

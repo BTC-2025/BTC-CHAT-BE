@@ -1,0 +1,86 @@
+// import { Router } from "express";
+// import Chat from "../models/Chat.js";
+// import User from "../models/User.js";
+// import { auth } from "../middleware/auth.js";
+
+const express = require('express')
+const Chat = require('../models/Chat')
+const User = require('../models/User')
+const {auth} = require('../middleware/auth')
+
+const router = express.Router();
+
+// list only chats that current user has messaged (threads)
+// router.get("/", auth, async (req, res) => {
+//   const chats = await Chat.find({ participants: req.user.id })
+//     .sort({ lastAt: -1 })
+//     .populate("participants", "full_name phone avatar")
+//     .lean();
+
+//   // shape items to show the other participant + preview
+//   const formatted = chats.map(c => {
+//     const others = c.participants.filter(p => String(p._id) !== req.user.id);
+//     const other = others[0]; // one-to-one threads in this starter
+//     return {
+//       id: c._id,
+//       other: { id: other._id, full_name: other.full_name, phone: other.phone, avatar: other.avatar || "" },
+//       lastMessage: c.lastMessage || "",
+//       lastAt: c.lastAt
+//     };
+//   });
+
+//   res.json(formatted);
+// });
+
+router.get("/", auth, async (req, res) => {
+  const userId = req.user.id;
+  const chats = await Chat.find({ participants: userId })
+    .sort({ lastAt: -1 })
+    .populate("participants", "full_name phone avatar isOnline lastSeen")
+    .lean();
+
+  const shaped = chats
+    .map(c => {
+      const others = c.participants.filter(p => String(p._id) !== userId);
+      const other = c.isGroup ? null : others[0];
+      const unreadCount = Number(c.unread?.[userId] || 0);
+      const pinned = (c.pinnedBy || []).map(String).includes(userId);
+      return {
+        id: c._id,
+        isGroup: c.isGroup,
+        title: c.isGroup ? c.title : (other?.full_name || other?.phone),
+        description: c.isGroup ? c.description : undefined,
+        other: c.isGroup ? undefined : {
+          id: other._id, full_name: other.full_name, phone: other.phone,
+          avatar: other.avatar, isOnline: other.isOnline, lastSeen: other.lastSeen
+        },
+        lastMessage: c.lastMessage,
+        lastAt: c.lastAt,
+        unread: unreadCount,
+        pinned
+      };
+    })
+    // pin sort (pinned first)
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || new Date(b.lastAt) - new Date(a.lastAt));
+
+  res.json(shaped);
+});
+
+
+// open a chat by phone (create if missing)
+router.post("/open", auth, async (req, res) => {
+  const { targetPhone } = req.body;
+  const target = await User.findOne({ phone: targetPhone });
+  if (!target) return res.status(404).json({ message: "Target not found" });
+  if (String(target._id) === req.user.id) return res.status(400).json({ message: "Cannot chat with yourself" });
+
+  let chat = await Chat.findOne({ participants: { $all: [req.user.id, target._id] } });
+  if (!chat) {
+    chat = await Chat.create({ participants: [req.user.id, target._id] });
+  }
+  res.json({ id: chat._id, other: { id: target._id, full_name: target.full_name, phone: target.phone } });
+});
+
+// export default router;
+
+module.exports = router
