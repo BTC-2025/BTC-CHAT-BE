@@ -278,6 +278,31 @@ const mountIO = (httpServer, corsOrigin) => {
 
     // Send message
     socket.on("message:send", async ({ chatId, body, attachments }) => {
+      const chat = await Chat.findById(chatId);
+      if (!chat) return;
+
+      // ✅ Check if blocked (for 1:1 chats only)
+      if (!chat.isGroup) {
+        const otherUserId = chat.participants.find(p => String(p) !== userId);
+        if (otherUserId) {
+          const sender = await User.findById(userId);
+          const recipient = await User.findById(otherUserId);
+
+          // Check if sender blocked recipient OR recipient blocked sender
+          const senderBlocked = sender?.blockedUsers?.map(String).includes(String(otherUserId));
+          const recipientBlocked = recipient?.blockedUsers?.map(String).includes(String(userId));
+
+          if (senderBlocked) {
+            socket.emit("message:error", { error: "You have blocked this user. Unblock to send messages." });
+            return;
+          }
+          if (recipientBlocked) {
+            socket.emit("message:error", { error: "You cannot send messages to this user." });
+            return;
+          }
+        }
+      }
+
       let msg = await Message.create({
         chat: chatId,
         sender: userId,
@@ -290,7 +315,6 @@ const mountIO = (httpServer, corsOrigin) => {
         .populate("sender", "full_name phone")
         .lean();
 
-      const chat = await Chat.findById(chatId);
       chat.lastMessage = body || (attachments?.length ? "[attachment]" : "");
       chat.lastAt = msg.createdAt;
 
@@ -516,6 +540,63 @@ const mountIO = (httpServer, corsOrigin) => {
       io.to(chatId).emit("group:updated", { chatId });
     });
 
+
+    // ✅ Block user
+    socket.on("user:block", async ({ targetUserId }, callback) => {
+      try {
+        await User.findByIdAndUpdate(userId, {
+          $addToSet: { blockedUsers: targetUserId }
+        });
+        socket.emit("user:blocked", { targetUserId });
+
+        // ✅ Notify the blocked user in real-time
+        io.emit("user:blockedBy", { blockedBy: userId, targetUserId });
+
+        if (callback) callback({ success: true });
+      } catch (err) {
+        console.error("Block error:", err);
+        if (callback) callback({ success: false, error: err.message });
+      }
+    });
+
+    // ✅ Unblock user
+    socket.on("user:unblock", async ({ targetUserId }, callback) => {
+      try {
+        await User.findByIdAndUpdate(userId, {
+          $pull: { blockedUsers: targetUserId }
+        });
+        socket.emit("user:unblocked", { targetUserId });
+
+        // ✅ Notify the unblocked user in real-time
+        io.emit("user:unblockedBy", { unblockedBy: userId, targetUserId });
+
+        if (callback) callback({ success: true });
+      } catch (err) {
+        console.error("Unblock error:", err);
+        if (callback) callback({ success: false, error: err.message });
+      }
+    });
+
+    // ✅ Check if user is blocked
+    socket.on("user:checkBlocked", async ({ targetUserId }, callback) => {
+      try {
+        const currentUser = await User.findById(userId);
+        const targetUser = await User.findById(targetUserId);
+
+        const iBlockedThem = currentUser?.blockedUsers?.map(String).includes(String(targetUserId));
+        const theyBlockedMe = targetUser?.blockedUsers?.map(String).includes(String(userId));
+
+        if (callback) callback({
+          success: true,
+          iBlockedThem,
+          theyBlockedMe,
+          isBlocked: iBlockedThem || theyBlockedMe
+        });
+      } catch (err) {
+        console.error("Check blocked error:", err);
+        if (callback) callback({ success: false, error: err.message });
+      }
+    });
 
   });
 

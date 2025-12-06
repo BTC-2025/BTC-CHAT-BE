@@ -9,9 +9,10 @@ const userSchema = new mongoose.Schema({
   about: { type: String, default: "Hey there! I am using Office Chat." },
   lastSeen: { type: Date, default: null },        // 👈 presence
   isOnline: { type: Boolean, default: false },    // 👈 presence
+  blockedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }], // 👈 blocked users
 }, { timestamps: true });
 
 
 // export default mongoose.model("User", userSchema);
 
-module.exports = mongoose.model("User" , userSchema)
+module.exports = mongoose.model("User", userSchema)
