@@ -6,7 +6,7 @@
 const express = require('express')
 const Chat = require('../models/Chat')
 const User = require('../models/User')
-const {auth} = require('../middleware/auth')
+const { auth } = require('../middleware/auth')
 
 const router = express.Router();
 
@@ -50,6 +50,8 @@ router.get("/", auth, async (req, res) => {
         isGroup: c.isGroup,
         title: c.isGroup ? c.title : (other?.full_name || other?.phone),
         description: c.isGroup ? c.description : undefined,
+        // ✅ Include admins array for groups (as string IDs)
+        admins: c.isGroup ? (c.admins || []).map(String) : undefined,
         other: c.isGroup ? undefined : {
           id: other._id, full_name: other.full_name, phone: other.phone,
           avatar: other.avatar, isOnline: other.isOnline, lastSeen: other.lastSeen
