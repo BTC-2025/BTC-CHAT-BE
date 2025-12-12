@@ -689,6 +689,105 @@ const mountIO = (httpServer, corsOrigin) => {
       }
     });
 
+    // ══════════════════════════════════════════════
+    // ✅ VIDEO/AUDIO CALL SIGNALING
+    // ══════════════════════════════════════════════
+
+    // Initiate a call
+    socket.on("call:initiate", async ({ targetUserId, callType }, callback) => {
+      try {
+        // Find target user's socket
+        let targetSocketId = null;
+        for (const [socketId, userData] of onlineUsers.entries()) {
+          if (userData.userId === targetUserId) {
+            targetSocketId = socketId;
+            break;
+          }
+        }
+
+        if (!targetSocketId) {
+          return callback?.({ success: false, error: "User is offline" });
+        }
+
+        // Get caller info
+        const caller = await User.findById(userId).select("full_name phone avatar");
+
+        // Send incoming call to target
+        io.to(targetSocketId).emit("call:incoming", {
+          callerId: userId,
+          callerName: caller?.full_name || caller?.phone || "Unknown",
+          callerAvatar: caller?.avatar,
+          callType // "video" or "audio"
+        });
+
+        callback?.({ success: true });
+      } catch (err) {
+        console.error("Call initiate error:", err);
+        callback?.({ success: false, error: err.message });
+      }
+    });
+
+    // Accept incoming call
+    socket.on("call:accept", async ({ callerId }) => {
+      // Find caller's socket
+      for (const [socketId, userData] of onlineUsers.entries()) {
+        if (userData.userId === callerId) {
+          io.to(socketId).emit("call:accepted", { recipientId: userId });
+          break;
+        }
+      }
+    });
+
+    // Reject incoming call
+    socket.on("call:reject", async ({ callerId }) => {
+      for (const [socketId, userData] of onlineUsers.entries()) {
+        if (userData.userId === callerId) {
+          io.to(socketId).emit("call:rejected", { recipientId: userId });
+          break;
+        }
+      }
+    });
+
+    // WebRTC offer
+    socket.on("call:offer", ({ targetUserId, offer }) => {
+      for (const [socketId, userData] of onlineUsers.entries()) {
+        if (userData.userId === targetUserId) {
+          io.to(socketId).emit("call:offer", { callerId: userId, offer });
+          break;
+        }
+      }
+    });
+
+    // WebRTC answer
+    socket.on("call:answer", ({ targetUserId, answer }) => {
+      for (const [socketId, userData] of onlineUsers.entries()) {
+        if (userData.userId === targetUserId) {
+          io.to(socketId).emit("call:answer", { recipientId: userId, answer });
+          break;
+        }
+      }
+    });
+
+    // ICE candidate exchange
+    socket.on("call:ice-candidate", ({ targetUserId, candidate }) => {
+      for (const [socketId, userData] of onlineUsers.entries()) {
+        if (userData.userId === targetUserId) {
+          io.to(socketId).emit("call:ice-candidate", { senderId: userId, candidate });
+          break;
+        }
+      }
+    });
+
+    // End call
+    socket.on("call:end", ({ targetUserId }) => {
+      for (const [socketId, userData] of onlineUsers.entries()) {
+        if (userData.userId === targetUserId) {
+          io.to(socketId).emit("call:ended", { endedBy: userId });
+          break;
+        }
+      }
+    });
+
   });
 
   return io;
