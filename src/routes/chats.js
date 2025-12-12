@@ -41,8 +41,12 @@ router.get("/", auth, async (req, res) => {
 
   const shaped = chats
     .map(c => {
-      const others = c.participants.filter(p => String(p._id) !== userId);
+      const others = c.participants.filter(p => p && String(p._id) !== userId);
       const other = c.isGroup ? null : others[0];
+
+      // Skip non-group chats without a valid other participant
+      if (!c.isGroup && !other) return null;
+
       const unreadCount = Number(c.unread?.[userId] || 0);
       const pinned = (c.pinnedBy || []).map(String).includes(userId);
       return {
@@ -62,6 +66,8 @@ router.get("/", auth, async (req, res) => {
         pinned
       };
     })
+    // Filter out null entries (chats with missing participants)
+    .filter(Boolean)
     // pin sort (pinned first)
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || new Date(b.lastAt) - new Date(a.lastAt));
 
