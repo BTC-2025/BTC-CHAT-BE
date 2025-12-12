@@ -17,26 +17,27 @@ const upload = multer({
     storage,
     limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
     fileFilter: (req, file, cb) => {
-        // Allow images, videos, and common document types
-        const allowedTypes = [
-            "image/jpeg",
-            "image/png",
-            "image/gif",
-            "image/webp",
-            "video/mp4",
-            "video/webm",
-            "video/quicktime",
+        // Check if file type is allowed (using startsWith for broader matching)
+        const mime = file.mimetype.toLowerCase();
+
+        const isImage = mime.startsWith("image/");
+        const isVideo = mime.startsWith("video/");
+        const isAudio = mime.startsWith("audio/");
+        const isDocument = [
             "application/pdf",
             "application/msword",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/vnd.ms-excel",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "text/plain",
-        ];
-        if (allowedTypes.includes(file.mimetype)) {
+            "application/octet-stream", // For some audio files
+        ].includes(mime);
+
+        if (isImage || isVideo || isAudio || isDocument) {
             cb(null, true);
         } else {
-            cb(new Error("File type not allowed"), false);
+            console.log("Rejected file type:", mime);
+            cb(new Error(`File type not allowed: ${mime}`), false);
         }
     },
 });
@@ -68,6 +69,8 @@ router.post("/", auth, upload.single("file"), async (req, res) => {
             resourceType = "video";
         } else if (req.file.mimetype.startsWith("image/")) {
             resourceType = "image";
+        } else if (req.file.mimetype.startsWith("audio/")) {
+            resourceType = "video"; // Cloudinary uses 'video' for audio files
         } else {
             resourceType = "raw"; // For documents/files
         }
@@ -92,6 +95,7 @@ router.post("/", auth, upload.single("file"), async (req, res) => {
         let type = "file";
         if (req.file.mimetype.startsWith("image/")) type = "image";
         else if (req.file.mimetype.startsWith("video/")) type = "video";
+        else if (req.file.mimetype.startsWith("audio/")) type = "audio";
 
         res.json({
             url: result.secure_url,
