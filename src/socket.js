@@ -406,10 +406,11 @@ const mountIO = (httpServer, corsOrigin) => {
           msg.deletedForEveryone = true;
           await msg.save();
 
-          // notify entire chat - include chatId for client validation
-          io.to(String(msg.chat)).emit("message:deleted:everyone", {
+          // notify entire chat - use chat._id for consistent room naming
+          const roomId = String(chat._id);
+          io.to(roomId).emit("message:deleted:everyone", {
             messageId,
-            chatId: String(msg.chat)
+            chatId: roomId
           });
         } else {
           // delete only for current user
